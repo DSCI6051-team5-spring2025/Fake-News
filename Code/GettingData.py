@@ -24,7 +24,7 @@ driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), opti
 BASE_URL = "https://www.politifact.com/factchecks/list/?page="
 
 # Number of pages to scrape
-NUM_PAGES = 5  
+NUM_PAGES = 18  
 
 # Directory to save images
 IMAGE_DIR = "politifact_images"
