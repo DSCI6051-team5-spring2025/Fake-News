@@ -1,35 +1,45 @@
-import pandas as pd 
-# Load the dataset
-df = pd.read_csv(r"C:\Users\rajar\OneDrive\Desktop\New folder\Fake-News\politifact_final_dataset.csv")
+import os
+import requests
+import pandas as pd
+import concurrent.futures
+from tqdm import tqdm
 
-# Normalize Rating values (convert to lowercase, remove spaces)
-df["Rating"] = df["Rating"].str.strip().str.lower()
+# Load the cleaned dataset
+df = pd.read_csv("politifact_cleaned_final.csv")
 
-# Debug: Print the cleaned unique values
-print("Unique Rating Values After Cleaning:")
-print(df["Rating"].unique())
+# Directory to save images
+image_dir = "politifact_images"
+os.makedirs(image_dir, exist_ok=True)
 
-# Correcting the True/False mapping
-true_labels = ["true", "half-true", "mostly-true"]
-false_labels = ["false", "pants-fire", "barely-true", "full-flop"]
+# Function to download an image with optimized handling
+def download_image(index, image_url):
+    filename = f"image_{index}.jpg"
+    file_path = os.path.join(image_dir, filename)
 
-# Apply correct mapping
-df["Label"] = df["Rating"].apply(lambda x: "True" if x in true_labels else "False")
+    try:
+        response = requests.get(image_url, stream=True, timeout=5)  # 5-sec timeout
+        if response.status_code == 200:
+            with open(file_path, "wb") as file:
+                for chunk in response.iter_content(1024):
+                    file.write(chunk)
+            return filename  # Success
+    except Exception as e:
+        return "Error"  # Failed download
 
-# Debug: Check label distribution
-print("Final Label Distribution:")
-print(df["Label"].value_counts())
+# Use multithreading to speed up downloads
+with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    results = list(tqdm(executor.map(download_image, df.index, df["Image URL"]),
+                        total=len(df), desc="Downloading Images"))
 
-# Drop the 'Source' column since it's not needed
-df_cleaned = df.drop(columns=["Source"], errors="ignore")
+# Add image filenames to the dataset
+df["Image Filename"] = results
 
-# Remove rows with missing values or "N/A" entries
-df_cleaned = df_cleaned.replace("N/A", pd.NA).dropna()
+# Remove failed downloads
+df_final = df[df["Image Filename"] != "Error"].reset_index(drop=True)
 
-# Save the cleaned dataset
-cleaned_file_path = "politifact_cleaned_dataset.csv"
-df_cleaned.to_csv(cleaned_file_path, index=False)
+# Save the updated dataset
+df_final.to_csv("politifact_cleaned_with_images.csv", index=False)
 
-
-# Return the path of the cleaned file
-cleaned_file_path
+print("✅ Image Download Complete!")
+print("📂 Dataset saved as: politifact_cleaned_with_images.csv")
+print("🖼️ Images saved in folder:", image_dir)

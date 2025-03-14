@@ -1,59 +1,85 @@
-import google.generativeai as genai
+import torch
+import requests
 import pandas as pd
-import time
-import os
+from PIL import Image
+import open_clip
+from io import BytesIO
+import google.generativeai as genai
 
-# Configure Gemini API Key
-GEMINI_API_KEY = "AIzaSyDHUT0g_9s_oIuqk6H5lvP-hzR6yPJ683s"  # Replace with your actual API key
-genai.configure(api_key=GEMINI_API_KEY)
+# 🔹 Replace with your Google AI API key
+genai.configure(api_key="AIzaSyDHUT0g_9s_oIuqk6H5lvP-hzR6yPJ683s")
 
-# Load the cleaned dataset
-df = pd.read_csv(r"C:\Users\rajar\OneDrive\Desktop\New folder\Fake-News\politifact_cleaned_dataset.csv")
+# Load CLIP Model
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model = open_clip.create_model("ViT-B-32", pretrained="openai").to(device)
+tokenizer = open_clip.get_tokenizer("ViT-B-32")
+preprocess = open_clip.image_transform(model.visual.image_size, is_train=False)
 
-# Define the directory where images are stored
-IMAGE_DIR = r"C:\Users\rajar\OneDrive\Desktop\New folder\Fake-News\politifact_images"
+# Load the dataset
+df = pd.read_csv("politifact_clip_labeled_dataset.csv")
 
-# Function to analyze claim and image relationship using Gemini AI
-def analyze_claim_image_relation(claim, full_article, image_filename):
-    image_path = os.path.join(IMAGE_DIR, image_filename) if pd.notna(image_filename) else "No Image"
-
-    prompt = f"""
-    Analyze the following **fact-checked news article** and determine:
-    
-    1. **Is the image relevant to the claim?** (Answer: "Yes" or "No")
-    2. **Does the article provide strong evidence for the claim?** (Answer: "Strong Evidence" or "Weak Evidence")
-
-    **Fact-Checked Claim:** {claim}
-    **Full Article Summary:** {full_article}
-
-    **Image Path:** {image_path}
-
-    Return only this format:
-    - Image Relevance: Yes/No
-    - Evidence Strength: Strong Evidence/Weak Evidence
-    """
-
+# Function to download and preprocess image
+def process_image(image_url):
     try:
-        model = genai.GenerativeModel('gemini-pro-latest')  # Use updated model name
-        response = model.generate_content(prompt)
-        return response.text.strip()
+        response = requests.get(image_url, timeout=10)
+        if response.status_code == 200:
+            image = Image.open(BytesIO(response.content)).convert("RGB")
+            return preprocess(image).unsqueeze(0).to(device)
+        else:
+            print(f" Skipping (Status Code {response.status_code}): {image_url}")
+            return None
     except Exception as e:
-        print(f"Error processing claim: {e}")
-        return "Unknown\nUnknown"
+        print(f" Error fetching image: {image_url} - {e}")
+        return None
 
-# Apply Gemini analysis
-for index, row in df.iterrows():
-    result = analyze_claim_image_relation(row["Claim"], row["Full Article"], row["Image Filename"])
+# Function to classify image-text relationship using CLIP
+def classify_with_clip(claim, image_url):
+    image_tensor = process_image(image_url)
+    if image_tensor is None:
+        return "Error", 0
 
-    # Parse results
-    results = result.split("\n")
-    df.at[index, "Image_Relevance"] = results[0].split(":")[-1].strip() if len(results) > 0 else "Unknown"
-    df.at[index, "Evidence_Strength"] = results[1].split(":")[-1].strip() if len(results) > 1 else "Unknown"
+    # Tokenize and encode text
+    text_tensor = tokenizer([claim]).to(device)
 
-    time.sleep(1)  # Prevent API rate limits
+    # Get CLIP embeddings
+    with torch.no_grad():
+        image_features = model.encode_image(image_tensor)
+        text_features = model.encode_text(text_tensor)
 
-# Save labeled dataset
-output_file_path = r"C:\Users\rajar\OneDrive\Desktop\New folder\Fake-News\politifact_labeled_with_gemini.csv"
-df.to_csv(output_file_path, index=False)
+        # Normalize embeddings
+        image_features /= image_features.norm(dim=-1, keepdim=True)
+        text_features /= text_features.norm(dim=-1, keepdim=True)
 
-print(f" Analysis complete! Labeled dataset saved to: {output_file_path}")
+        # Compute similarity score
+        similarity = (image_features @ text_features.T).item()
+
+    # Set a threshold for classification
+    label = "Related" if similarity > 0.25 else "Unrelated"
+    return label, similarity
+
+# Function to generate explanation using Gemini
+def generate_explanation(claim, image_url, similarity_score, label):
+    try:
+        model = genai.GenerativeModel("gemini-1.5-flash")  # Using Gemini API
+        response = model.generate_content([
+            {"text": f"Analyze the relationship between the claim: '{claim}' and the given image (URL: {image_url}). "
+                     f"The AI model (CLIP) has classified this image as '{label}' with a similarity score of {similarity_score:.2f}. "
+                     "Explain in detail why this classification was made, considering any visible elements, objects, and text in the image."}
+        ])
+
+        return response.text if response.text else "No explanation provided"
+    except Exception as e:
+        print(f" Error generating explanation for {image_url}: {e}")
+        return "Error generating explanation"
+
+# Apply CLIP model and generate explanations
+df["CLIP_Label"], df["CLIP_Similarity"] = zip(*df.apply(lambda row: classify_with_clip(row["Claim"], row["Image URL"]), axis=1))
+
+# Generate explanations for each image
+df["Explanation"] = df.apply(lambda row: generate_explanation(row["Claim"], row["Image URL"], row["CLIP_Similarity"], row["CLIP_Label"])
+                             if row["CLIP_Label"] != "Error" else "No explanation (Error)", axis=1)
+
+# Save the updated dataset with explanations
+df.to_csv("politifact_clip_explanations.csv", index=False)
+
+print(" CLIP Labels with Explanations Generated & Saved!")
