@@ -8,6 +8,14 @@ class CLIPClassifier(nn.Module):
         self.classifier = nn.Linear(self.clip.config.projection_dim, 2)
 
     def forward(self, input_ids=None, pixel_values=None, attention_mask=None, **kwargs):
-        outputs = self.clip(input_ids=input_ids, pixel_values=pixel_values, attention_mask=attention_mask, return_loss=False)
-        pooled_output = outputs[0]  # logits
-        return self.classifier(pooled_output), pooled_output
+        text_features = self.clip.get_text_features(input_ids=input_ids, attention_mask=attention_mask) if input_ids is not None else None
+        image_features = self.clip.get_image_features(pixel_values=pixel_values) if pixel_values is not None else None
+
+        if text_features is not None and image_features is not None:
+            fused = (text_features + image_features) / 2
+        elif text_features is not None:
+            fused = text_features
+        else:
+            fused = image_features
+
+        return self.classifier(fused), fused

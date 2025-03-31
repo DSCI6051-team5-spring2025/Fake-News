@@ -1,0 +1,9 @@
+torch
+transformers
+scikit-learn
+matplotlib
+seaborn
+fastapi
+uvicorn
+pillow
+torchvision

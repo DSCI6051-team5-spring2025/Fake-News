@@ -32,7 +32,7 @@ class FakeNewsDataset(Dataset):
         return inputs
 
 # Load data
-csv_path = "data/raw/Cleaned_news_no_Unknown.csv"
+csv_path = "data/raw/politifact_articles_with_images.csv"
 image_dir = "data/raw/images"
 data = load_and_preprocess(csv_path, image_dir)
 
