@@ -20,3 +20,5 @@ This project aims to develop a system that detects fake news and images using re
 - Real-time API integration
 - MLOps tools (e.g., Docker, Kubernetes)
 - Flask/Django (for API deployment)
+
+## Deployment in huggingspaces https://huggingface.co/spaces/raja1729d/blip-fake-news-classifier
