@@ -1,9 +1,9 @@
 torch
 transformers
+pandas
 scikit-learn
 matplotlib
 seaborn
-fastapi
-uvicorn
-pillow
-torchvision
+mlflow
+beautifulsoup4
+requests
