@@ -1,0 +1,10 @@
+torch
+transformers
+pandas
+scikit-learn
+matplotlib
+seaborn
+mlflow
+beautifulsoup4
+requests
+selenium
