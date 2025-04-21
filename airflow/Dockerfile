@@ -15,6 +15,6 @@ RUN apt-get update && apt-get install -y \
 USER airflow
 
 # Install Python packages
-RUN pip install selenium beautifulsoup4 pandas scikit-learn
+RUN pip install selenium beautifulsoup4 pandas scikit-learn gradio
 COPY requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt

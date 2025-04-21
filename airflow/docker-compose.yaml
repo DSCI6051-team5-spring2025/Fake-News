@@ -51,7 +51,7 @@ x-airflow-common:
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
     # For backward compatibility, with Airflow <2.3
     AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
@@ -87,6 +87,9 @@ services:
     volumes:
       - postgres-db-volume:/var/lib/postgresql/data
       - ./data:/opt/airflow/data
+    networks:
+      - airflow_network
+
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "airflow"]
       interval: 5s
@@ -103,6 +106,8 @@ services:
       timeout: 30s
       retries: 50
     restart: always
+    networks:
+      - airflow_network
 
   airflow-webserver:
     <<: *airflow-common
@@ -121,7 +126,8 @@ services:
         condition: service_completed_successfully
     environment:
     - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
-
+    networks:
+      - airflow_network
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
@@ -135,7 +141,8 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
-
+    networks:
+      - airflow_network
   airflow-worker:
     <<: *airflow-common
     command: celery worker
@@ -156,7 +163,8 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
-
+    networks:
+      - airflow_network
   airflow-triggerer:
     <<: *airflow-common
     command: triggerer
@@ -170,7 +178,8 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
-
+    networks:
+      - airflow_network
   airflow-init:
     <<: *airflow-common
     entrypoint: /bin/bash
@@ -249,7 +258,8 @@ services:
     volumes:
       - ${AIRFLOW_PROJ_DIR:-.}:/sources
       - ./data:/opt/airflow/data
-
+    networks:
+      - airflow_network
   airflow-cli:
     <<: *airflow-common
     profiles:
@@ -262,6 +272,8 @@ services:
       - bash
       - -c
       - airflow
+    networks:
+      - airflow_network
 
   # You can enable flower by adding "--profile flower" option e.g. docker-compose --profile flower up
   # or by explicitly targeted on the command line e.g. docker-compose up flower.
@@ -283,11 +295,19 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
+    networks:
+      - airflow_network
   selenium:
     container_name: remote_chromedriver
     image: seleniarm/standalone-chromium:latest
     ports:
       - 4444:4444
     restart: always
+    networks:
+      - airflow_network
+  
 volumes:
   postgres-db-volume:
+networks:
+  airflow_network:
+    driver: bridge

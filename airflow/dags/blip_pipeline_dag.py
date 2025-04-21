@@ -241,6 +241,9 @@ def train_blip_model():
     os.makedirs(os.path.dirname(model_path), exist_ok=True)
 
     df = pd.read_csv(data_path)
+    df = df.groupby("binary_label", group_keys=False).apply(lambda x: x.sample(n=min(100, len(x)), random_state=42)).reset_index(drop=True)
+    print(f"🔹 Subsampled size: {len(df)}")
+
     train_df, val_df = train_test_split(df, test_size=0.2, stratify=df["binary_label"], random_state=42)
     train_ds = FakeNewsDataset(train_df)
     val_ds = FakeNewsDataset(val_df)
@@ -250,6 +253,10 @@ def train_blip_model():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = BlipForFakeNewsClassification(num_labels=2).to(device)
+    if os.path.exists(model_path):
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        print("📦 Loaded previously saved model.")
+
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-5)
     criterion = nn.CrossEntropyLoss()
     best_val_acc = 0
@@ -325,6 +332,47 @@ def evaluate_blip_model():
 
     print("✅ Evaluation complete. Accuracy:", acc)
 
+def deploy_gradio():
+    import gradio as gr
+    import torch
+    from PIL import Image
+    import pandas as pd
+    from transformers import BlipProcessor
+    from torch import nn
+
+    class BlipForFakeNewsClassification(nn.Module):
+        def __init__(self, num_labels):
+            super().__init__()
+            from transformers import BlipModel
+            self.blip = BlipModel.from_pretrained("Salesforce/blip-image-captioning-base")
+            self.classifier = nn.Linear(self.blip.config.projection_dim, num_labels)
+
+        def forward(self, input_ids, pixel_values, attention_mask=None):
+            outputs = self.blip(input_ids=input_ids, pixel_values=pixel_values, attention_mask=attention_mask)
+            pooled_output = outputs.image_embeds
+            return self.classifier(pooled_output)
+
+    # Load model
+    processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+    model = BlipForFakeNewsClassification(num_labels=2)
+    model_path = "/opt/airflow/data/model/blip_best_model.pth"
+    model.load_state_dict(torch.load(model_path, map_location=torch.device("cpu")))
+    model.eval()
+
+    def predict(image, text):
+        inputs = processor(images=image, text=text, return_tensors="pt", padding="max_length", truncation=True, max_length=128)
+        with torch.no_grad():
+            logits = model(
+                input_ids=inputs["input_ids"],
+                pixel_values=inputs["pixel_values"],
+                attention_mask=inputs["attention_mask"]
+            )
+        pred = torch.argmax(logits, dim=1).item()
+        return "🟢 Real News" if pred == 1 else "🔴 Fake News"
+
+    gr.Interface(fn=predict, inputs=["image", "text"], outputs="text", title="BLIP Fake News Detector").launch(share=True)
+
+
 with DAG(
     dag_id="blip_mlops_all_in_one",
     default_args={'owner': 'airflow', 'start_date': datetime(2024, 1, 1)},
@@ -357,4 +405,9 @@ with DAG(
         python_callable=evaluate_blip_model
     )
 
-    task_scrape >> task_merge >> preprocess >> train >> evaluate
+    task_deploy = PythonOperator(
+        task_id="deploy_gradio_app",
+        python_callable=deploy_gradio,
+    )
+
+    task_scrape >> task_merge >> preprocess >> train >> evaluate >> task_deploy

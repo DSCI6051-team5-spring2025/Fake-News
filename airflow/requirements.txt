@@ -8,3 +8,4 @@ mlflow
 beautifulsoup4
 requests
 selenium
+gradio
