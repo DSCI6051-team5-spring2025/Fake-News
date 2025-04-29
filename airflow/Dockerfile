@@ -16,5 +16,7 @@ USER airflow
 
 # Install Python packages
 RUN pip install selenium beautifulsoup4 pandas scikit-learn gradio
+RUN pip install dash plotly pandas psycopg2-binary huggingface_hub
+
 COPY requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt

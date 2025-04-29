@@ -143,7 +143,7 @@ def scrape_politifact():
     df.drop_duplicates(subset=["Claim", "Article URL"], inplace=True)
     df = df[df["Image URL"] != "N/A"].dropna(subset=["Image URL"]).reset_index(drop=True)
     df.to_pickle("/opt/airflow/data/temp_scraped_df.pkl")
-    print(" Scraped and stored DataFrame in pickle.")
+    print("✅ Scraped and stored DataFrame in pickle.")
 
 
 def hash_filename(url):
@@ -161,10 +161,15 @@ def merge_and_download():
     else:
         df_existing = pd.DataFrame(columns=df_new.columns)
 
+    before_merge = len(df_existing)
+
     df_new.drop_duplicates(subset=["Claim", "Article URL"], inplace=True)
     df_combined = pd.concat([df_existing, df_new], ignore_index=True)
     df_combined.drop_duplicates(subset=["Claim", "Article URL"], inplace=True)
     df_combined.reset_index(drop=True, inplace=True)
+
+    merged_rows = len(df_combined) - before_merge
+    rejected_rows = len(df_new) - merged_rows
 
     os.makedirs(image_dir, exist_ok=True)
     image_paths = []
@@ -178,7 +183,6 @@ def merge_and_download():
         try:
             filename = hash_filename(img_url)
             full_path = os.path.join("/opt/airflow/data/raw/images", filename).replace("\\", "/")
-
 
             if not os.path.exists(full_path):
                 response = requests.get(img_url, timeout=10)
@@ -196,7 +200,11 @@ def merge_and_download():
     df_combined["Image_Path"] = image_paths
     df_combined = df_combined[df_combined["Image_Path"] != "N/A"]
     df_combined.to_csv(csv_path, index=False)
-    print(f"✅ Merged, downloaded images, and saved final dataset. Total: {len(df_combined)}")
+
+    print(f"✅ Merge Complete!")
+    print(f"🔹 Rows added: {merged_rows}")
+    print(f"🔹 Rows rejected or duplicate: {rejected_rows}")
+    print(f"📄 Final dataset size: {len(df_combined)}")
 
 def preprocess_data():
     csv_path = "/opt/airflow/data/raw/politifact_with_local_images.csv"
@@ -237,11 +245,17 @@ def preprocess_data():
 
 def train_blip_model():
     data_path = "/opt/airflow/data/processed/processed_fake_news.csv"
-    model_path = "/opt/airflow/data/model/blip_best_model.pth"
+    model_path = "/opt/airflow/data/model/blip_best_model.bin"
     os.makedirs(os.path.dirname(model_path), exist_ok=True)
 
     df = pd.read_csv(data_path)
-    df = df.groupby("binary_label", group_keys=False).apply(lambda x: x.sample(n=min(100, len(x)), random_state=42)).reset_index(drop=True)
+    min_count = min(df["binary_label"].value_counts().min(), 75)
+
+    df = (
+        df.groupby("binary_label", group_keys=False)
+        .apply(lambda x: x.sample(n=min_count, random_state=42))
+        .reset_index(drop=True)
+    )
     print(f"🔹 Subsampled size: {len(df)}")
 
     train_df, val_df = train_test_split(df, test_size=0.2, stratify=df["binary_label"], random_state=42)
@@ -287,18 +301,18 @@ def train_blip_model():
         print(f"✅ Epoch {epoch+1}: Train Accuracy = {train_acc:.4f} | Loss = {total_loss:.4f}")
         if train_acc > best_val_acc:
             best_val_acc = train_acc
-            torch.save(model.state_dict(), model_path)
+            torch.save(model.state_dict(), "/opt/airflow/data/model/blip_best_model.bin")
             print("📌 Best model saved!")
 
 def evaluate_blip_model():
     data_path = "/opt/airflow/data/processed/processed_fake_news.csv"
-    model_path = "/opt/airflow/data/model/blip_best_model.pth"
-    output_path = "/opt/airflow/data/model/confusion_matrix.png"
+    model_path = "/opt/airflow/data/model/blip_best_model.bin"
 
     df = pd.read_csv(data_path)
     _, val_df = train_test_split(df, test_size=0.2, stratify=df["binary_label"], random_state=42)
+    val_df = val_df.sample(n=min(50, len(val_df)), random_state=42).reset_index(drop=True)  # Small sample
     val_ds = FakeNewsDataset(val_df)
-    val_loader = DataLoader(val_ds, batch_size=8)
+    val_loader = DataLoader(val_ds, batch_size=4)  # Smaller batch
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = BlipForFakeNewsClassification(num_labels=2).to(device)
@@ -319,59 +333,24 @@ def evaluate_blip_model():
             val_labels.extend(labels.cpu().numpy())
 
     acc = accuracy_score(val_labels, val_preds)
-    cm = confusion_matrix(val_labels, val_preds)
+    print(f"✅ Quick evaluation complete. Accuracy: {acc:.4f}")
 
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
-    plt.title(f"Validation Accuracy: {acc:.4f}")
-    plt.xlabel("Predicted")
-    plt.ylabel("Actual")
-    plt.tight_layout()
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    plt.savefig(output_path)
-    plt.close()
+from huggingface_hub import upload_file, HfApi
+import os
 
-    print("✅ Evaluation complete. Accuracy:", acc)
+def deploy_to_hf():
+    hf_token = ""
+    if not hf_token:
+        raise ValueError("❌ HF_TOKEN environment variable not set")
 
-def deploy_gradio():
-    import gradio as gr
-    import torch
-    from PIL import Image
-    import pandas as pd
-    from transformers import BlipProcessor
-    from torch import nn
-
-    class BlipForFakeNewsClassification(nn.Module):
-        def __init__(self, num_labels):
-            super().__init__()
-            from transformers import BlipModel
-            self.blip = BlipModel.from_pretrained("Salesforce/blip-image-captioning-base")
-            self.classifier = nn.Linear(self.blip.config.projection_dim, num_labels)
-
-        def forward(self, input_ids, pixel_values, attention_mask=None):
-            outputs = self.blip(input_ids=input_ids, pixel_values=pixel_values, attention_mask=attention_mask)
-            pooled_output = outputs.image_embeds
-            return self.classifier(pooled_output)
-
-    # Load model
-    processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-    model = BlipForFakeNewsClassification(num_labels=2)
-    model_path = "/opt/airflow/data/model/blip_best_model.pth"
-    model.load_state_dict(torch.load(model_path, map_location=torch.device("cpu")))
-    model.eval()
-
-    def predict(image, text):
-        inputs = processor(images=image, text=text, return_tensors="pt", padding="max_length", truncation=True, max_length=128)
-        with torch.no_grad():
-            logits = model(
-                input_ids=inputs["input_ids"],
-                pixel_values=inputs["pixel_values"],
-                attention_mask=inputs["attention_mask"]
-            )
-        pred = torch.argmax(logits, dim=1).item()
-        return "🟢 Real News" if pred == 1 else "🔴 Fake News"
-
-    gr.Interface(fn=predict, inputs=["image", "text"], outputs="text", title="BLIP Fake News Detector").launch(share=True)
-
+    upload_file(
+        path_or_fileobj="/opt/airflow/data/model/blip_best_model.bin",
+        path_in_repo="pytorch_model.bin",  # or use any name you want
+        repo_id="raja1729d/blip2-fake-news-classifier",
+        token=hf_token,
+        repo_type="model"
+    )
+    print("✅ Model uploaded to Hugging Face!")
 
 with DAG(
     dag_id="blip_mlops_all_in_one",
@@ -405,9 +384,10 @@ with DAG(
         python_callable=evaluate_blip_model
     )
 
-    task_deploy = PythonOperator(
-        task_id="deploy_gradio_app",
-        python_callable=deploy_gradio,
+    gradio_task = PythonOperator(
+        task_id="deploy_to_hf",
+        python_callable=deploy_to_hf
     )
 
-    task_scrape >> task_merge >> preprocess >> train >> evaluate >> task_deploy
+
+    task_scrape >> task_merge >> preprocess >> train >> evaluate >> gradio_task

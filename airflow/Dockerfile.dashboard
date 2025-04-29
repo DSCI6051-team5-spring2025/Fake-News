@@ -1,0 +1,15 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install dependencies
+COPY requirements-dashboard.txt .
+RUN pip install --no-cache-dir -r requirements-dashboard.txt
+
+# Copy your Dash app
+COPY dashboard_app.py .
+
+
+EXPOSE 8050
+
+CMD ["python", "dashboard_app.py"]

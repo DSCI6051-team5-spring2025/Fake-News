@@ -66,6 +66,8 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
     - ./data:/opt/airflow/data
+    - ./airflow:/opt/airflow
+
 
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
@@ -89,6 +91,9 @@ services:
       - ./data:/opt/airflow/data
     networks:
       - airflow_network
+    ports:
+      - "5432:5432"
+
 
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "airflow"]
@@ -125,9 +130,13 @@ services:
       airflow-init:
         condition: service_completed_successfully
     environment:
-    - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      <<: *airflow-common-env
+      AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
     networks:
       - airflow_network
+
+
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
@@ -143,6 +152,10 @@ services:
         condition: service_completed_successfully
     networks:
       - airflow_network
+    environment:
+      <<: *airflow-common-env
+      AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth'
+
   airflow-worker:
     <<: *airflow-common
     command: celery worker
@@ -305,6 +318,20 @@ services:
     restart: always
     networks:
       - airflow_network
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: dashboard-1 
+    ports:
+      - "8051:8051"
+    volumes:
+      - ./logs:/opt/airflow/logs
+    depends_on:
+      - postgres
+    networks:
+      - airflow_network
+
   
 volumes:
   postgres-db-volume:
